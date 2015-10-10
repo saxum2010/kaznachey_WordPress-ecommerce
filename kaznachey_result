@@ -1,0 +1,55 @@
+<?php
+	if (!function_exists('add_action')) {
+		$wp_root = '../../../..';
+		if (file_exists($wp_root.'/wp-load.php')) {
+			require_once($wp_root.'/wp-load.php');
+		} else {
+			require_once($wp_root.'/wp-config.php');
+		}
+	}
+
+	global $wpdb, $wpsc_cart, $wpsc_coupons;
+
+	switch ($_GET['status'])
+	{
+		case 'done':
+			$HTTP_RAW_POST_DATA = @$HTTP_RAW_POST_DATA ? $HTTP_RAW_POST_DATA : file_get_contents('php://input');
+
+			$hrpd = json_decode($HTTP_RAW_POST_DATA);
+				
+			$order_id = intval($hrpd->MerchantInternalPaymentId); 
+			
+			$merchnatSecretKey = get_option('merchnatSecretKey');
+			$merchantGuid = get_option('merchantGuid');
+			$urlGetMerchantInfo = get_option('urlGetMerchantInfo');
+			$amounts = $purchase_log[0]['totalprice'];
+			
+			$signature_u = md5(md5(
+				$merchantGuid.
+				$merchnatSecretKey.
+				"$amounts".
+				$order_id
+			));
+			
+			if(@$hrpd->MerchantInternalPaymentId)
+			{
+				if($hrpd->ErrorCode == 0)
+				{
+					if($hrpd->CustomMerchantInfo == $signature_u)
+					{
+						$notes = 'Заказ оплачен. Платеж через www.kaznachey.ua';
+						$db1=@mysql_query ("UPDATE ".WPSC_TABLE_PURCHASE_LOGS." SET processed='3',  transactid='".$order_id."', notes='".$notes."' WHERE id='".$order_id."'") or die; 
+						exit;
+					}
+				}
+			}
+			
+			wp_redirect( home_url() ); exit;
+			
+		break;		
+		
+		case 'success':
+			wp_redirect( home_url() ); exit;
+		break;
+	}
+?>

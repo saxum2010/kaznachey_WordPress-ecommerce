@@ -1,0 +1,365 @@
+<?php
+
+global $urlGetMerchantInfo, $urlGetClientMerchantInfo;
+$urlGetMerchantInfo = 'http://payment.kaznachey.net/api/PaymentInterface/CreatePayment';
+$urlGetClientMerchantInfo = 'http://payment.kaznachey.net/api/PaymentInterface/GetMerchatInformation';
+
+function kaznachey_img ($kzn_button_selected) {
+  if ($kzn_button_selected == 0) {
+    $button='';
+  } 
+	if ($kzn_button_selected == 1) {
+		$button = WPSC_CORE_IMAGES_URL."/kaznachey.png";
+	}
+
+		$cc_types = GetMerchnatInfo();
+		if($cc_types)
+		{
+			$box = '<br><br><label for="cc_types">Выберите способ оплаты</label><select name="cc_types" id="cc_types">';
+			$term_url = GetTermToUse();
+				foreach ($cc_types["PaySystems"] as $paysystem)
+				{
+					//$PaySystems[$paysystem['Id']] = $paysystem['PaySystemName'];
+					$box .= "<option value='$paysystem[Id]'>$paysystem[PaySystemName]</option>";
+				}
+			$box .= '</select><br><input type="checkbox" checked="checked" value="1" name="cc_agreed" id="cc_agreed"><label for="cc_agreed"><a href="'.$term_url.'" target="_blank">Согласен с условиями использования</a></label>';
+			
+			$box .= "<script type=\"text/javascript\">
+			(function(){ 
+			var cc_a = jQuery('#cc_agreed');
+				 cc_a.on('click', function(){
+					if(cc_a.is(':checked')){	
+						jQuery('.custom_gateway').find('.error').text('');
+					}else{
+						cc_a.next().after('<span class=\"error\">Примите условие!</span>');
+					}
+				 });
+			})(); 
+			</script> ";
+		}
+	
+	return $button .'" style="position:relative; top:5px;" />' . $box . '<img style="display:none!important" src="';
+}     
+$kzn_button_selected=get_option('kzn_button_choose');
+$kzn_button = kaznachey_img($kzn_button_selected);  
+$nzshpcrt_gateways[$num]['name'] = 'kaznachey';
+$nzshpcrt_gateways[$num]['internalname'] = 'kaznachey';
+$nzshpcrt_gateways[$num]['function'] = 'kzn_gateway_kzn';
+$nzshpcrt_gateways[$num]['form'] = "form_kaznachey";
+$nzshpcrt_gateways[$num]['submit_function'] = "submit_kaznachey";
+$nzshpcrt_gateways[$num]['display_name'] = 'kaznachey';
+$nzshpcrt_gateways[$num]['image'] = $kzn_button;
+
+//gateway ???
+function kzn_gateway_kzn($separator, $sessionid) {
+    global $wpdb, $urlGetMerchantInfo, $urlGetClientMerchantInfo;
+
+    $purchase_log_sql = "SELECT * FROM `" . WPSC_TABLE_PURCHASE_LOGS . "` WHERE `sessionid`= " . $sessionid . " LIMIT 1";
+    $purchase_log = $wpdb->get_results($purchase_log_sql, ARRAY_A);
+    $data['pay_for'] = $id = $purchase_log[0]['id'];
+    $data['currency'] = get_option('kaznachey_curcode');
+    $merchnatSecretKey = get_option('merchnatSecretKey');
+    $merchantGuid = get_option('merchantGuid');
+    $currency=$data['currency'];
+    $desc=$sessionid;
+    $order_id=$data['pay_for'];
+	$user_id = $purchase_log[0]['user_ID'];
+	$amount = $amounts = $purchase_log[0]['totalprice'];
+	$total_price = number_format($amount, $decimal_places, '.', '');
+
+	$selectedPaySystemId = $_REQUEST['collected_data']['cc_types'] ? $_REQUEST['collected_data']['cc_types'] : "1" ;
+	
+	$products_wp =  $wpdb->get_results("SELECT * FROM `" . WPSC_TABLE_CART_CONTENTS . "` WHERE `purchaseid`= $id");
+	
+	$i = 0;
+	$amount2 = 0;
+	$product_count =  0;
+	
+	if($user_id < 1)
+	{
+		$user_id = 1;
+	}
+	
+  	foreach ($products_wp as $key=>$pr_item)
+	{
+	
+		$thumb = wp_get_attachment_image_src( get_post_thumbnail_id($pr_item->prodid), 'large' );
+		$products[$i]['ImageUrl'] = (isset($thumb[0]))?$thumb[0]:'';
+		
+		$products[$i]['ProductItemsNum'] = number_format($pr_item->quantity, 2, '.', '');
+		$products[$i]['ProductName'] = $pr_item->name;
+		$products[$i]['ProductPrice'] = number_format($pr_item->price, 2, '.', '');
+		$products[$i]['ProductId'] = $pr_item->prodid;
+		$amount2 += $pr_item->price * $pr_item->quantity;
+		$product_count += $pr_item->quantity;
+		$i++;
+		
+		$purchaseid = $pr_item->purchaseid;
+	}
+	
+	if($purchaseid)
+	{
+		$submited_form_data = $wpdb->get_row("SELECT * FROM `" . WPSC_TABLE_SUBMITED_FORM_DATA . "` WHERE `log_id`= $purchaseid and `form_id` = 9");
+		$user_email = $submited_form_data->value;		
+		
+		$submited_form_phone = $wpdb->get_row("SELECT * FROM `" . WPSC_TABLE_SUBMITED_FORM_DATA . "` WHERE `log_id`= $purchaseid and `form_id` = 8");
+		$delivery_phone = $submited_form_phone->value;
+	}
+	
+	if($amount != $amount2)
+	{
+		$tt = $amount - $amount2; 
+		$products[$i]['ProductItemsNum'] = '1.00';
+		$products[$i]['ProductName'] = 'Delivery or discount';
+		$products[$i]['ProductPrice'] = number_format($tt, 2, '.', '');
+		$products[$i]['ProductId'] = '00001'; 
+		$pr_c = '1.00';
+		$amount2  = number_format($amount2 + $tt, 2, '.', '');
+	}
+
+	$signature_u = md5(md5(
+		$merchantGuid.
+		$merchnatSecretKey.
+		"$amounts".
+		$order_id
+	));
+	
+	$url = WP_PLUGIN_URL.'/'.str_replace(basename( __FILE__),"",plugin_basename(__FILE__));
+	$path_done = $url."kaznachey_result.php?status=done";
+	$path_success = $url."kaznachey_result.php?status=success";
+
+	//Детали платежа
+    $paymentDetails = Array(
+       "MerchantInternalPaymentId"=>"$order_id",// Номер платежа в системе мерчанта
+       "MerchantInternalUserId"=>"$user_id", //Номер пользователя в системе мерчанта
+       "EMail"=>"$user_email",
+       "PhoneNumber"=>"$delivery_phone",
+       "CustomMerchantInfo"=>"$signature_u",// Любая информация
+       "StatusUrl"=>"$path_done",// url состояния
+       "ReturnUrl"=>"$path_success",//url возврата 
+       "BuyerCountry"=>"$BuyerCountry",//Страна
+       "BuyerFirstname"=>"$BuyerFirstname",//Имя,
+       "BuyerPatronymic"=>"$BuyerPatronymic",// отчество
+       "BuyerLastname"=>"$BuyerLastname",//Фамилия
+       "BuyerStreet"=>"$BuyerStreet",// Адрес
+       "BuyerZone"=>"$BuyerZone",//   Область
+       "BuyerZip"=>"$BuyerZip",//  Индекс
+       "BuyerCity"=>"$BuyerCity",//   Город,
+        // аналогичная информация о доставке
+       "DeliveryFirstname"=>"$DeliveryFirstname",// 
+       "DeliveryLastname"=>"$DeliveryLastname",//
+       "DeliveryZip"=>"$DeliveryZip",//     
+       "DeliveryCountry"=>"$DeliveryCountry",//   
+       "DeliveryPatronymic"=>"$DeliveryPatronymic",//
+       "DeliveryStreet"=>"$DeliveryStreet",//   
+       "DeliveryCity"=>"$DeliveryCity",//      ,
+       "DeliveryZone"=>"$DeliveryZone",//      0,
+    );
+
+	$product_count = (@$pr_c) ? $product_count + $pr_c : $product_count;
+	$product_count = number_format($product_count, 2, '.', '');	
+	$amount2 = number_format($amount2, 2, '.', '');	
+
+	$signature = md5(
+		$merchantGuid.
+		"$amount2".//Общаяя сумма
+		"$product_count".//колличество товара
+		$paymentDetails["MerchantInternalUserId"].
+		$paymentDetails["MerchantInternalPaymentId"].
+		$selectedPaySystemId.
+		$merchnatSecretKey
+	);	
+
+	$request = Array(
+        "SelectedPaySystemId"=>$selectedPaySystemId,//Выбранная платёжная система
+        "Products"=>$products,// Продукты
+        "PaymentDetails"=>$paymentDetails, //Детали платежа
+        "Signature"=>$signature,
+        "MerchantGuid"=>$merchantGuid,
+		"Currency"=> get_option('kaznachey_curcode')
+    );
+
+	$res = sendRequestKaznachey($urlGetMerchantInfo, json_encode($request));
+
+	$result = json_decode($res,true);
+
+	if($result['ErrorCode'] != 0)
+	{
+		wp_redirect( home_url() ); exit;
+	}
+	
+	echo(base64_decode($result["ExternalForm"]));
+    exit();
+  
+}
+
+ function nzshpcrt_kaznachey_results() {
+    if (isset($_POST['cs1']) && ($_POST['cs1'] != '') && ($_GET['sessionid'] == '')) {
+        $_GET['sessionid'] = $_POST['cs1'];
+    }
+}
+
+function submit_kaznachey() {
+    if (isset($_POST['merchantGuid'])) {
+        update_option('merchantGuid', $_POST['merchantGuid']);
+    }
+
+    if (isset($_POST['kaznachey_curcode'])) {
+        update_option('kaznachey_curcode', $_POST['kaznachey_curcode']);
+    }
+    
+    if (isset($_POST['test_mode'])) {
+    update_option('test_mode', $_POST['test_mode']);
+    }
+    if (isset($_POST['kzn_button_choose'])) {
+    update_option('kzn_button_choose', $_POST['kzn_button_choose']);
+    }
+
+    if (isset($_POST['merchnatSecretKey'])) {
+        update_option('merchnatSecretKey', $_POST['merchnatSecretKey']);
+    }
+
+    if (isset($_POST['kaznachey_debug'])) {
+        update_option('kaznachey_debug', $_POST['kaznachey_debug']);
+    }
+
+    if (!isset($_POST['kaznachey_form']))
+        $_POST['kaznachey_form'] = array();
+    foreach ((array) $_POST['kaznachey_form'] as $form => $value) {
+        update_option(('kaznachey_form_' . $form), $value);
+    }
+    return true;
+}
+
+function form_kaznachey() {
+    $select_currency[get_option('kaznachey_curcode')] = "selected='selected'";
+    $kzn_select_button_kzn[get_option('kzn_button_choose')] = "selected='selected'";
+    $kaznachey_debug = get_option('kaznachey_debug');
+    $kaznachey_debug1 = "";
+    $kaznachey_debug2 = "";
+    switch ($kaznachey_debug) {
+        case 0:
+            $kaznachey_debug2 = "checked ='checked'";
+            break;
+        case 1:
+            $kaznachey_debug1 = "checked ='checked'";
+            break;
+    }
+
+    if (!isset($select_currency['USD']))
+        $select_currency['USD'] = '';
+    if (!isset($select_currency['RUB']))
+        $select_currency['RUB'] = '';
+    if (!isset($select_currency['EUR']))
+        $select_currency['EUR'] = '';
+    if (!isset($kzn_select_button_kzn['0']))
+        $kzn_select_button_kzn['0'] = '';
+    if (!isset($kzn_select_button_kzn['1']))
+        $kzn_select_button_kzn['1'] = '';
+           
+    $output = "
+	<tr>
+		<td>Merchant ID</td>
+		<td><input type='text' size='40' value='" . get_option('merchantGuid') . "' name='merchantGuid' /></td>
+	</tr>
+	<tr>
+		<td>&nbsp;</td> <td><small>your`s Merchant ID</small></td>
+	</tr>
+  	<tr>
+		<td>Merchnat Secret Key</td>
+		<td><input type='text' size='40' value='" . get_option('merchnatSecretKey') . "' name='merchnatSecretKey' /></td>
+	</tr>
+	<tr>
+		<td>&nbsp;</td> <td><small>Secret key kaznachey</small></td>
+	</tr>
+  
+ <tr>
+		<td>Currency</td>
+		<td><select name='kaznachey_curcode'>
+				<option " . $select_currency['USD'] . " value='USD'>USD</option>
+				<option " . $select_currency['EUR'] . " value='EUR'>EUR</option>
+				<option " . $select_currency['RUB'] . " value='RUB'>RUR</option>
+				<option " . $select_currency['UAH'] . " value='UAH'>UAH</option>
+			</select>
+		</td>
+	</tr>
+	<tr>
+			<td>&nbsp;</td> <td><small>Select CURRENCY.</small></td>
+	</tr>
+
+	<tr>
+		<td>Choose button</td>
+		<td><select name='kzn_button_choose'>
+		    <option " . $kzn_select_button_kzn['0'] . " value='0'>None</option>
+				<option " . $kzn_select_button_kzn['1'] . " value='1'>Логотип</option>
+			</select>
+		</td>
+	</tr>";
+    return $output;
+}
+
+add_action('init', 'nzshpcrt_kaznachey_results');
+
+function sendRequestKaznachey($url,$data)
+{
+	$curl =curl_init();
+	if (!$curl)
+		return false;
+
+	curl_setopt($curl, CURLOPT_URL,$url );
+	curl_setopt($curl, CURLOPT_POST,true);
+	curl_setopt($curl, CURLOPT_HTTPHEADER, 
+			array("Expect: ","Content-Type: application/json; charset=UTF-8",'Content-Length: ' 
+				. strlen($data)));
+	curl_setopt($curl, CURLOPT_POSTFIELDS,$data);
+	curl_setopt($curl, CURLOPT_RETURNTRANSFER,True);
+	$res =  curl_exec($curl);
+	curl_close($curl);
+
+	return $res;
+}
+
+function GetMerchnatInfo($id = false)
+{
+	$urlGetClientMerchantInfo = get_option('urlGetClientMerchantInfo');
+	$merchantGuid = get_option('merchantGuid');
+	$merchnatSecretKey = get_option('merchnatSecretKey');
+
+    $requestMerchantInfo = Array(
+        "MerchantGuid"=>$merchantGuid,
+        "Signature"=>md5($merchantGuid.$merchnatSecretKey)
+    );
+
+    $resMerchantInfo = json_decode(sendRequestKaznachey($urlGetClientMerchantInfo , json_encode($requestMerchantInfo)),true); 
+
+	if($id)
+	{
+		foreach ($resMerchantInfo["PaySystems"] as $key=>$paysystem)
+		{
+			if($paysystem['Id'] == $id)
+			{
+				return $paysystem;
+			}
+		}
+	}else{
+		return $resMerchantInfo;
+	}
+}
+
+function GetTermToUse()
+{
+	$urlGetClientMerchantInfo = get_option('urlGetClientMerchantInfo');
+	$merchantGuid = get_option('merchantGuid');
+	$merchnatSecretKey = get_option('merchnatSecretKey');
+
+    $requestMerchantInfo = Array(
+        "MerchantGuid"=>$merchantGuid,
+        "Signature"=>md5($merchantGuid.$merchnatSecretKey)
+    );
+
+    $resMerchantInfo = json_decode(sendRequestKaznachey($urlGetClientMerchantInfo , json_encode($requestMerchantInfo)),true); 
+
+	return $resMerchantInfo["TermToUse"];
+
+}
+?>
